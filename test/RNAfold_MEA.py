@@ -7,10 +7,10 @@ seq = "AUUUCCACUAGAGAAGGUCUAGAGUGUUUGUCGUUUGUCAGAAGUCCCUAUUCCAGGUACGAACACGGUGGAU
 
 # create fold_compound data structure (required for all subsequently applied  algorithms)
 fc = RNA.fold_compound(seq)
-
+subopt = fc.subopt(10)
 # compute MFE and MFE structure
 (mfe_struct, mfe) = fc.mfe()
-
+print(subopt)
 # rescale Boltzmann factors for partition function computation
 fc.exp_params_rescale(mfe)
 

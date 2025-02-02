@@ -3,7 +3,7 @@ import RNA
 sequence = "GGGGAAAACCCC"
 
 # Set global switch for unique ML decomposition
-RNA.cvar.uniq_ML = 1
+# RNA.cvar.uniq_ML = 1
 
 subopt_data = {"counter": 1, "sequence": sequence}
 
@@ -18,12 +18,16 @@ def print_subopt_result(structure, energy, data):
 
 
 # Create a 'fold_compound' for our sequence
-a = RNA.fold_compound(sequence)
-
+fc = RNA.fold_compound(sequence)
+(ss, mfe) = fc.mfe()
 # Enumerate all structures 500 dacal/mol = 5 kcal/mol arround
 # the MFE and print each structure using the function above
-a.subopt_cb(500, print_subopt_result, subopt_data)
-
+# subopt = a.subopt_cb(500, print_subopt_result, subopt_data)
+subopt = fc.subopt_cb(500, print_subopt_result, subopt_data)
+so = fc.subopt(500)
+print(so)
+print(subopt)
+print(ss, mfe)
 
 import RNA
 import logging
@@ -72,12 +76,12 @@ import logging
 # RNA.log_cb_add(reroute_logs, level=RNA.LOG_LEVEL_DEBUG)
 
 
-# compose an example call that might issue a few debug- or other
-# log messages
-md = RNA.md()
-s = RNA.random_string(100, "ACGU")
-print("random string:", s)
+# # compose an example call that might issue a few debug- or other
+# # log messages
+# md = RNA.md()
+# s = RNA.random_string(100, "ACGU")
+# print("random string:", s)
 
-fc = RNA.fold_compound(s, md)
+# fc = RNA.fold_compound(s, md)
 
-print(fc.mfe())
+# print(fc.mfe())

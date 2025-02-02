@@ -35,44 +35,6 @@ def generate_rna_dataset(
     )  # Ensure min_length is positive
     max_length = mean_length + 2 * std_dev_length
 
-    def generate_length():
-        if distribution == "normal":
-            return max(
-                min_length,
-                min(
-                    max_length,
-                    int(
-                        random.gauss(
-                            kwargs.get("mean", mean_length),
-                            kwargs.get("std", std_dev_length),
-                        )
-                    ),
-                ),
-            )
-        elif distribution == "uniform":
-            return random.randint(min_length, max_length)
-        elif distribution == "exponential":
-            return max(
-                min_length,
-                min(max_length, int(random.expovariate(kwargs.get("lambda", 0.01)))),
-            )
-        elif distribution == "log-normal":
-            return max(
-                min_length,
-                min(
-                    max_length,
-                    int(
-                        random.lognormvariate(
-                            kwargs.get("mu", 6), kwargs.get("sigma", 0.5)
-                        )
-                    ),
-                ),
-            )
-        elif distribution == "custom":
-            return random.choice(kwargs.get("custom_lengths", [min_length, max_length]))
-        else:
-            raise ValueError("Unsupported distribution.")
-
     # Initialize the ViennaRNA fold model
     md = RNA.md()
 
@@ -82,13 +44,12 @@ def generate_rna_dataset(
     # Generate the dataset
     for i in range(num_samples):
         # Generate sequence length
-        n = generate_length()
+        # n = generate_length(distribution, min_length, max_length, **kwargs)
         # Generate random RNA sequence
-        sequence = RNA.random_string(n, "ACGU")
+        sequence = generate_sequence()
 
         # Compute secondary structure and MFE
-        fc = RNA.fold_compound(sequence, md)
-        structure, mfe = fc.mfe()
+        structure, mfe = compute_structures(sequence, subopt=False)
 
         # Append to data list
         data.append({"Sequence": sequence, "Structure": structure, "MFE": mfe})
@@ -166,6 +127,155 @@ def rna_to_ct(rna_sequence, dot_bracket_structure, mfe):
     return "\n".join(ct_lines)
 
 
+import RNA
+import random
+import csv
+from multiprocessing import Pool, cpu_count
+from functools import partial
+
+
+def generate_length(distribution, min_length, max_length, **kwargs):
+    if distribution == "normal":
+        mean = kwargs["mean"]
+        std = kwargs["std"]
+        length = int(random.gauss(mean, std))
+    elif distribution == "uniform":
+        length = random.randint(min_length, max_length)
+    elif distribution == "exponential":
+        lambd = kwargs["lambda"]
+        length = int(random.expovariate(lambd))
+    elif distribution == "log-normal":
+        mu = kwargs["mu"]
+        sigma = kwargs["sigma"]
+        length = int(random.lognormvariate(mu, sigma))
+    else:
+        raise ValueError(f"Unsupported distribution: {distribution}")
+    # Ensure the length is within min and max
+    return max(min_length, min(max_length, length))
+
+
+def generate_sequence():
+    params = distribution_params.get(distribution, {})
+    length = generate_length(
+        distribution=distribution,
+        min_length=min_length,
+        max_length=max_length,
+        **params,
+    )
+    return RNA.random_string(length, "ACGU")
+
+
+def compute_structures(sequence, subopt=True):
+    md = RNA.md()
+    fc = RNA.fold_compound(sequence, md)
+
+    # Compute suboptimal structures within delta_energy from MFE
+    if subopt:
+        subopt_solutions = fc.subopt(delta_energy)
+        return subopt_solutions
+    # return mfe_structure, mfe_energy, subopt_solutions
+    else:
+        mfe_structure, mfe_energy = fc.mfe()
+        return mfe_structure, mfe_energy
+
+
+# def classify_sequence(sequence, mfe_structure, mfe_energy, subopt_solutions):
+def classify_sequence(sequence, subopt_solutions):
+    if len(subopt_solutions) < 2:
+        return None  # Not enough structures to determine d
+    # The first solution is MFE, the second is next best
+    mfe = subopt_solutions[0].energy
+    mfe_structure = subopt_solutions[0].structure
+    second_best = subopt_solutions[1]
+    d = abs(mfe - second_best.energy)
+    data = {
+        "sequence": sequence,
+        "mfe_structure": mfe_structure,
+        "mfe_energy": mfe,
+        "second_best_structure": second_best.structure,
+        "second_best_energy": second_best.energy,
+        "d": d,
+    }
+    if d > theta1:
+        return ("easy", data)
+    elif theta2 <= d <= theta1:
+        return ("medium", data)
+    else:
+        return ("hard", data)
+
+
+# def process_sequence(_):
+#     try:
+#         seq = generate_sequence()
+#         solutions = compute_structures(seq)
+#         result = classify_sequence(solutions)
+#         if result:
+#             result[1]["sequence"] = seq  # Add raw sequence
+#             return result
+#     except Exception as e:
+#         return None
+
+
+# def generate_dataset_complex(num_samples):
+#     datasets = {"easy": [], "medium": [], "hard": []}
+
+#     with Pool(cpu_count()) as pool:
+#         # Process sequences in parallel batches
+#         batch_size = 100
+#         needed = 3 * num_samples
+
+#         while sum(map(len, datasets.values())) < needed:
+#             results = pool.map(process_sequence, range(batch_size))
+
+#             for result in results:
+#                 if not result:
+#                     continue
+#                 class_label, data = result
+#                 if len(datasets[class_label]) < num_samples:
+#                     datasets[class_label].append(data)
+
+#                 # Early exit if all classes filled
+#                 if all(len(v) >= num_samples for v in datasets.values()):
+#                     return datasets
+#     return datasets
+
+
+def generate_dataset_complex(num_samples):
+    datasets = {"easy": [], "medium": [], "hard": []}
+    attempts = 0
+    max_attempts = 3 * num_samples**2  # Prevent infinite loops
+    while (
+        len(datasets["easy"]) < num_samples
+        or len(datasets["medium"]) < num_samples
+        or len(datasets["hard"]) < num_samples
+    ) and attempts < max_attempts:
+        sequence = generate_sequence()
+        # mfe_structure, mfe_energy, subopt_solutions = compute_structures(sequence)
+        subopt_solutions = compute_structures(sequence)
+
+        # print(mfe_structure, mfe_energy, subopt_solutions)
+        classification = classify_sequence(sequence, subopt_solutions)
+        attempts += 1
+        if classification is None:
+            continue
+        class_label, data = classification
+        if len(datasets[class_label]) < num_samples:
+            datasets[class_label].append(data)
+    print("attempts:", attempts)
+    return datasets
+
+
+def save_to_csv(datasets, prefix="rna_dataset"):
+    for class_label, data in datasets.items():
+        filename = f"{prefix}_{class_label}.csv"
+        with open(filename, "w", newline="") as csvfile:
+            if not data:
+                continue  # Skip empty datasets
+            writer = csv.DictWriter(csvfile, fieldnames=data[0].keys())
+            writer.writeheader()
+            writer.writerows(data)
+
+
 # rna_sequence = "CCGGUACGAUACUUAAUAAAUUUUGAUGUGUUUGGGCGUAUGCGGUUGGACUUCUAGGUGCGAAGGGGGAUGGUUCUGUCACCUGGUUCUGAAGAUCAGCUUAGAUCCCCCUGCCCUUGCCUGACACUGCGGAACAUAAUGUUCUUAUCUGAAUCCACUAUAGCGAAGUAGCAGCCCCGAGACCCAAUCAGGUUCAUUGUGGGAUUGUUCACCCGUUAGUGUCGGUCACAAUUAUCUAGACCCACGCUCCGCGCAAUUGAAGAACGGAUCCUCCGCAGAAUACAAAACUUCAACACUGCAAUUACCAUUUGCUUAAUGAUUCAAUACAUUUCACAAUGAUGACGUUACAAAUCCAAUGAAUAAUUCUAGUGC"
 # dot_bracket_structure = "..((((.(((((((((......)))).))))).((((....(((.((((....)))).)))..(((((((....((((....((((((.....))))))..))))))))))))))).)))).....(((((((.......((((......))))......(((((..(((((((((((((((.((.....)).)).))).))).))))).)).)))))((((.((((...........)))).))))((((..(.......)..))))...)))))))...............(((((.(((((.((((.(.((..(((((((...((((....)))).))).))))..)).).))))..))))).)))))."
 # mfe = -88.0999984741211
@@ -174,11 +284,26 @@ def rna_to_ct(rna_sequence, dot_bracket_structure, mfe):
 # print(ct_content)
 
 if __name__ == "__main__":
-    num_samples = 10
-    mean_length = 88
+
+    import time
+
+    start_time = time.time()
+    num_samples = 1666
+    mean_length = 198
     std_dev_length = 66
     output_ct = f"rna_ct_files_{mean_length}"
+    distribution_params = {
+        "normal": {"mean": mean_length, "std": std_dev_length},
+        "uniform": {},
+        "exponential": {"lambda": 0.01},
+        "log-normal": {"mu": 6, "sigma": 0.5},
+        # "custom": {"custom_lengths": [min_length, max_length]}
+    }
+    distribution = "normal"
+    min_length = max(1, mean_length - 2 * std_dev_length)
+    max_length = mean_length + 3 * std_dev_length
 
+    # Generate RNA dataset
     df = generate_rna_dataset(
         num_samples=num_samples,
         mean_length=mean_length,
@@ -187,4 +312,28 @@ if __name__ == "__main__":
         output_ct=output_ct,  # Directory for .ct files
         distribution="normal",
     )
-#     print(df)
+    #     print(df)
+
+    # Configuration parameters
+    # theta1 = 1.6  # Threshold for easy datasets
+    # theta2 = 0.5  # Threshold for medium datasets
+    # delta_energy = 500  # Energy delta for suboptimal structures
+    # num_samples_per_class = 100  # Number of samples per class
+
+    # # Sequence length parameters
+    # mean_length = 200
+    # std_dev_length = 68
+    # min_length = max(1, mean_length - 2 * std_dev_length)
+    # max_length = mean_length + 3 * std_dev_length
+    # distribution = "normal"  # Choose from "normal", "uniform", "exponential", "log-normal", "custom"
+    # # Parameters for each distribution type
+
+    # # Generate and save datasets
+    # datasets = generate_dataset_complex(num_samples_per_class)
+    # save_to_csv(datasets)
+
+    # print(
+    #     f"Generated {len(datasets['easy'])} easy, {len(datasets['medium'])} medium, {len(datasets['hard'])} hard samples."
+    # )
+    # print the time cost
+    print("Time cost: ", time.time() - start_time)
